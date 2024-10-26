@@ -10,6 +10,65 @@
 #include "lol.h"
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <Wire.h>
+
+
+//EEPROM address
+int selected_mode1 = 0;
+int selected_phase1 = 20;
+int selected_pre_phase1 = 40;
+int hour1 = 60;
+int min1 = 80;
+int sec1 = 100;
+int final_limit_hour1 = 120;
+int final_limit_min1 = 140;
+int final_limit_sec1 = 160;
+int flag1 = 180;
+
+int selected_mode2 = 200;
+int selected_phase2 = 220;
+int selected_pre_phase2 = 240;
+int hour2 = 260;
+int min2 = 280;
+int sec2 = 300;
+int final_limit_hour2 = 320;
+int final_limit_min2 = 340;
+int final_limit_sec2 = 360;
+int flag2 = 380;
+
+#define EEPROM 0x50
+
+
+void writeIntToEEPROM(byte deviceAddress, byte memAddress, int data) {
+  Wire.beginTransmission(deviceAddress);
+  Wire.write(memAddress);           // Memory address
+  Wire.write((data >> 24) & 0xFF);  // Write MSB (Most Significant Byte)
+  Wire.write((data >> 16) & 0xFF);  // Write next byte
+  Wire.write((data >> 8) & 0xFF);   // Write next byte
+  Wire.write(data & 0xFF);          // Write LSB (Least Significant Byte)
+  Wire.endTransmission();
+  delay(10); // Ensure EEPROM write cycle is complete
+}
+
+// Function to read an integer from EEPROM
+int readIntFromEEPROM(byte deviceAddress, byte memAddress) {
+  int value = 0;
+  
+  Wire.beginTransmission(deviceAddress);
+  Wire.write(memAddress);           // Memory address
+  Wire.endTransmission();
+  
+  Wire.requestFrom(deviceAddress, (uint8_t)4);  // Request 4 bytes (size of int)
+  if (Wire.available() == 4) {
+    value = (Wire.read() << 24);    // Read MSB
+    value |= (Wire.read() << 16);   // Read next byte
+    value |= (Wire.read() << 8);    // Read next byte
+    value |= Wire.read();           // Read LSB
+  }
+  return value;
+}
+
+
 
 TFT_eSPI tft = TFT_eSPI();
 
@@ -85,8 +144,8 @@ const byte phase_temp[4][14][2] = {{{95, 92}, {96, 93}, {98, 94}, {99, 95}, {100
                               {{145, 105}, {147, 106}, {151, 107}, {153, 107}, {155, 108}, {157, 108}, {159, 109}, {161, 109}, {163, 110}, {163, 110}, {165, 110}}};
 
 const byte phase_duration_hour[4] = {0, 0, 0, 0};    //4 10 12 10
-const byte phase_duration_min[4] = {0, 0, 0, 0};   //0 0 30 0
-const byte phase_duration_sec[4] = {10, 10, 10, 10};
+const byte phase_duration_min[4] = {3, 4, 2, 1};   //0 0 30 0
+const byte phase_duration_sec[4] = {0, 0, 0, 0};
 
 // For key pad
 #define NUM_LEN 12
@@ -120,6 +179,7 @@ TFT_eSPI_Button manual_key[5];
 // Some global variable
 uint64_t cur_time = 0;
 uint64_t pre_time = 0;
+uint64_t pre_eeprom_time = 0;
 uint8_t sec = 0;
 uint8_t minute = 0;
 uint8_t hour = 0;
@@ -174,7 +234,52 @@ float tempF[2] = {0, 0};
 bool work_process = true;
 
 
+// Switch pin
+// Define the pin number for the interrupt
+const int s1 = 27;
+const int s2 = 26;
+const int s3 = 25;
+const int s4 = 35;
+
+// Define a variable to track the pin state
+volatile bool btnState1 = false;
+volatile bool btnState2 = false;
+volatile bool btnState3 = false;
+volatile bool btnState4 = false;
+
+
+// Interrupt Service Routine (ISR)
+void IRAM_ATTR btn1() {
+    btnState1 = true;
+    btnState2 = false;
+    btnState3 = false;
+    btnState4 = false;
+}
+
+void IRAM_ATTR btn2() {
+    btnState1 = false;
+    btnState2 = true;
+    btnState3 = false;
+    btnState4 = false;
+}
+
+void IRAM_ATTR btn3() {
+    btnState1 = false;
+    btnState2 = false;
+    btnState3 = true;
+    btnState4 = false;
+}
+
+void IRAM_ATTR btn4() {
+    btnState1 = false;
+    btnState2 = false;
+    btnState3 = false;
+    btnState4 = true;
+}
+
+
 void setup() {
+    Wire.begin(32, 33);
     Serial.begin(115200);
 
     tft.init();
@@ -195,13 +300,97 @@ void setup() {
 
     // draw_display();
     // drawKeypad();
+
+    // Button Mode
+      // Set the pin mode to input
+    pinMode(s1, INPUT_PULLDOWN);  // Use INPUT_PULLUP to detect both states
+    pinMode(s2, INPUT_PULLDOWN);  // Use INPUT_PULLUP to detect both states
+    pinMode(s3, INPUT_PULLDOWN);  // Use INPUT_PULLUP to detect both states
+    pinMode(s4, INPUT_PULLDOWN);  // Use INPUT_PULLUP to detect both states
+
+    // Attach the interrupt to the pin
+    // handleInterrupt() is the function to be called when interrupt occurs
+    // CHANGE will trigger on both rising and falling edges
+    attachInterrupt(digitalPinToInterrupt(s1), btn1, HIGH);
+    attachInterrupt(digitalPinToInterrupt(s2), btn2, HIGH);
+    attachInterrupt(digitalPinToInterrupt(s3), btn3, HIGH);
+    attachInterrupt(digitalPinToInterrupt(s4), btn4, HIGH);
+
+    check_eeprom();
 }
+
+void check_eeprom() {
+    if(readIntFromEEPROM(EEPROM, flag1) == 200){
+        selected_mode = readIntFromEEPROM(EEPROM, selected_mode1);
+        selected_phase = readIntFromEEPROM(EEPROM, selected_phase1);
+        selected_pre_phase = readIntFromEEPROM(EEPROM, selected_pre_phase1);
+        hour = readIntFromEEPROM(EEPROM, hour1);
+        minute = readIntFromEEPROM(EEPROM, min1);
+        sec = readIntFromEEPROM(EEPROM, sec1);
+        final_limit_hour = readIntFromEEPROM(EEPROM, final_limit_hour1);
+        final_limit_min = readIntFromEEPROM(EEPROM, final_limit_min1);
+        final_limit_sec = readIntFromEEPROM(EEPROM, final_limit_sec1);
+        limit_time_ms = time_to_ms(final_limit_hour, final_limit_min, final_limit_sec);
+        cur_clock_flag = true;
+    }
+    else if(readIntFromEEPROM(EEPROM, flag2) == 200){
+        selected_mode = readIntFromEEPROM(EEPROM, selected_mode2);
+        selected_phase = readIntFromEEPROM(EEPROM, selected_phase2);
+        selected_pre_phase = readIntFromEEPROM(EEPROM, selected_pre_phase2);
+        hour = readIntFromEEPROM(EEPROM, hour2);
+        minute = readIntFromEEPROM(EEPROM, min2);
+        sec = readIntFromEEPROM(EEPROM, sec2);
+        final_limit_hour = readIntFromEEPROM(EEPROM, final_limit_hour2);
+        final_limit_min = readIntFromEEPROM(EEPROM, final_limit_min2);
+        final_limit_sec = readIntFromEEPROM(EEPROM, final_limit_sec2);
+        limit_time_ms = time_to_ms(final_limit_hour, final_limit_min, final_limit_sec);
+        cur_clock_flag = true;
+    }
+    return;
+}
+
+bool flip = true;
 
 void loop() {
     // home_touch();
+    // button_handle();
     phase_control();
     cur_time = millis();
-    if(cur_time - pre_time >= 970 && selected_interface == 1 && cur_clock_flag){
+    // Write to EEPROM
+    if(cur_time - pre_eeprom_time > 60000 && selected_interface == 1 && cur_clock_flag){
+        pre_eeprom_time = cur_time;
+        Serial.print("Dry temp: "); Serial.println(final_dry_temp);
+        Serial.print("Wet temp: "); Serial.println(final_wet_temp);
+        if(flip){
+            writeIntToEEPROM(EEPROM, selected_mode1, selected_mode);
+            writeIntToEEPROM(EEPROM, selected_phase1, selected_phase);
+            writeIntToEEPROM(EEPROM, selected_pre_phase1, selected_pre_phase);
+            writeIntToEEPROM(EEPROM, hour1, hour);
+            writeIntToEEPROM(EEPROM, min1, minute);
+            writeIntToEEPROM(EEPROM, sec1, sec);
+            writeIntToEEPROM(EEPROM, final_limit_hour1, final_limit_hour);
+            writeIntToEEPROM(EEPROM, final_limit_min1, final_limit_min);
+            writeIntToEEPROM(EEPROM, final_limit_sec1, final_limit_sec);
+            writeIntToEEPROM(EEPROM, flag1, 200);
+            delay(10);
+        }
+        else{
+            writeIntToEEPROM(EEPROM, selected_mode2, selected_mode);
+            writeIntToEEPROM(EEPROM, selected_phase2, selected_phase);
+            writeIntToEEPROM(EEPROM, selected_pre_phase2, selected_pre_phase);
+            writeIntToEEPROM(EEPROM, hour2, hour);
+            writeIntToEEPROM(EEPROM, min2, minute);
+            writeIntToEEPROM(EEPROM, sec2, sec);
+            writeIntToEEPROM(EEPROM, final_limit_hour2, final_limit_hour);
+            writeIntToEEPROM(EEPROM, final_limit_min2, final_limit_min);
+            writeIntToEEPROM(EEPROM, final_limit_sec2, final_limit_sec);
+            writeIntToEEPROM(EEPROM, flag2, 200);
+            delay(10);
+        }
+        flip = !flip;
+    }
+
+    if(cur_time - pre_time >= 800 && selected_interface == 1 && cur_clock_flag){
         pre_time = cur_time;
         sec++;
         if(sec == 60){
@@ -220,6 +409,40 @@ void loop() {
     temp_measure();
     temp_control();
 }
+
+
+void button_handle() {
+    if(btnState1 == true) {
+        Serial.println("button 1");
+        btnState1 = false;
+        btnState2 = false;
+        btnState3 = false;
+        btnState4 = false;
+    }
+    if(btnState2 == true) {
+        Serial.println("button 2");
+        btnState1 = false;
+        btnState2 = false;
+        btnState3 = false;
+        btnState4 = false;
+    }
+    if(btnState3 == true) {
+        Serial.println("button 3");
+        btnState1 = false;
+        btnState2 = false;
+        btnState3 = false;
+        btnState4 = false;
+    }
+    if(btnState4 == true) {
+        Serial.println("button 4");
+        btnState1 = false;
+        btnState2 = false;
+        btnState3 = false;
+        btnState4 = false;
+    }
+}
+
+
 
 // // Time controller function
 // void time_controller() {
@@ -267,6 +490,9 @@ uint64_t time_to_ms(int h, int m, int s) {
 void phase_control() {
     // Serial.println(limit_time_ms);
     if(limit_time_ms < time_to_ms(hour, minute, sec) && selected_mode == 2){
+        writeIntToEEPROM(EEPROM, flag1, 0);
+        writeIntToEEPROM(EEPROM, flag2, 0);
+        delay(10);
         warning_section(2);
         hour = 0;
         minute = 0;
@@ -287,6 +513,9 @@ void phase_control() {
     else if(limit_time_ms < time_to_ms(hour, minute, sec) && selected_mode == 1){
         selected_phase++;
         if(selected_phase >= 5){
+            writeIntToEEPROM(EEPROM, flag1, 0);
+            writeIntToEEPROM(EEPROM, flag2, 0);
+            delay(10);
             warning_section(2);
             hour = 0;
             minute = 0;
@@ -384,8 +613,8 @@ void warning_section(int warning_flag) {
 
 void temp_control() {
     if(selected_mode == 1){     // automatic mode
-        changed_dry_temp = phase_temp[selected_phase-1][hour][0];
-        changed_wet_temp = phase_temp[selected_phase-1][hour][1];
+        final_dry_temp = phase_temp[selected_phase-1][hour][0];
+        final_wet_temp = phase_temp[selected_phase-1][hour][1];
     }
     if(cur_clock_flag){
         // control temp here
@@ -781,7 +1010,7 @@ void manual_touch() {
 
     // Ok Button
     if(manual_key[4].justReleased()) {
-        if(changed_dry_temp < changed_wet_temp && (limit_hour != 0 || limit_min != 0 || limit_sec > 10)){
+        if(changed_dry_temp > 50 && changed_wet_temp >50 && (limit_hour != 0 || limit_min != 0 || limit_sec > 10)){
             // interface, phase, option, mode
             selected_interface = 1;
             manual_changing_option = 0;
@@ -812,6 +1041,19 @@ void manual_touch() {
 
             // clock timer start
             cur_clock_flag = true;
+
+            // Writing to EEPROM
+            writeIntToEEPROM(EEPROM, selected_mode1, selected_mode);
+            writeIntToEEPROM(EEPROM, selected_phase1, selected_phase);
+            writeIntToEEPROM(EEPROM, selected_pre_phase1, selected_pre_phase);
+            writeIntToEEPROM(EEPROM, hour1, hour);
+            writeIntToEEPROM(EEPROM, min1, minute);
+            writeIntToEEPROM(EEPROM, sec1, sec);
+            writeIntToEEPROM(EEPROM, final_limit_hour1, final_limit_hour);
+            writeIntToEEPROM(EEPROM, final_limit_min1, final_limit_min);
+            writeIntToEEPROM(EEPROM, final_limit_sec1, final_limit_sec);
+            writeIntToEEPROM(EEPROM, flag1, 200);
+            delay(10);
         }
         else{
             Serial.println("Requirement not fullfilled");
